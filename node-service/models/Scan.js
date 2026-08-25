@@ -1,13 +1,23 @@
 const mongoose = require("mongoose");
 
-const VulnerabilitySchema = new mongoose.Schema(
+const FindingSchema = new mongoose.Schema(
   {
+    id: { type: String, required: true },
     type: { type: String, required: true },
-    severity: { type: String, enum: ["Low", "Medium", "High"], required: true },
+    severity: {
+      type: String,
+      enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+      required: true,
+    },
+    confidence: { type: Number, default: 0.5 }, // 0-1
+    cwe: { type: String, default: null },
+    file: { type: String, default: null },
     line: { type: Number, default: null },
+    codeSnippet: { type: String, default: "" },
     description: { type: String, required: true },
-    suggestedFix: { type: String, default: "" },
-    snippet: { type: String, default: "" },
+    impact: { type: String, default: "" },
+    recommendation: { type: String, default: "" },
+    language: { type: String, default: null },
   },
   { _id: false }
 );
@@ -15,18 +25,42 @@ const VulnerabilitySchema = new mongoose.Schema(
 const ScanSchema = new mongoose.Schema(
   {
     scanId: { type: String, required: true, unique: true, index: true },
+    // repo scan fields
+    repositoryUrl: { type: String, default: null },
+    repositoryName: { type: String, default: null },
+    branch: { type: String, default: "main" },
+    // quick scan fields
+    inputType: { type: String, enum: ["repo", "snippet"], default: "repo" },
+    // status
     status: {
       type: String,
       enum: ["pending", "processing", "completed", "failed"],
       default: "pending",
+      index: true,
     },
-    input: { type: String, required: true },
-    inputType: { type: String, enum: ["code", "repo"], default: "code" },
-    vulnerabilities: { type: [VulnerabilitySchema], default: [] },
-    riskScore: { type: Number, default: null },
+    startedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    duration: { type: Number, default: null }, // ms
+    // results
+    securityScore: { type: Number, default: null }, // 0-100
+    findings: { type: [FindingSchema], default: [] },
+    summary: {
+      critical: { type: Number, default: 0 },
+      high: { type: Number, default: 0 },
+      medium: { type: Number, default: 0 },
+      low: { type: Number, default: 0 },
+      info: { type: Number, default: 0 },
+      total: { type: Number, default: 0 },
+    },
+    filesScanned: { type: Number, default: 0 },
+    totalFiles: { type: Number, default: 0 },
+    languageSummary: { type: Map, of: Number, default: {} },
     error: { type: String, default: null },
   },
   { timestamps: true }
 );
+
+// Index for repo history queries
+ScanSchema.index({ repositoryName: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Scan", ScanSchema);

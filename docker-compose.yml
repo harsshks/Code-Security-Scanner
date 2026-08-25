@@ -3,69 +3,92 @@ version: "3.9"
 services:
   mongo:
     image: mongo:7
-    container_name: scanner_mongo
+    container_name: reposentinel_mongo
     restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
     networks:
-      - scanner_net
+      - sentinel_net
 
   redis:
     image: redis:7-alpine
-    container_name: scanner_redis
+    container_name: reposentinel_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
     networks:
-      - scanner_net
+      - sentinel_net
 
-  ml-service:
+  engine:
     build:
       context: ./ml-service
-    container_name: scanner_ml
+    container_name: reposentinel_engine
     restart: unless-stopped
     ports:
       - "8000:8000"
+    volumes:
+      - scan_tmp:/tmp
     networks:
-      - scanner_net
+      - sentinel_net
 
-  node-service:
+  api:
     build:
       context: ./node-service
-    container_name: scanner_node
+    container_name: reposentinel_api
     restart: unless-stopped
+    command: node server.js
     ports:
       - "4000:4000"
     environment:
-      - MONGO_URI=mongodb://mongo:27017/scanner
+      - MONGO_URI=mongodb://mongo:27017/reposentinel
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - ML_SERVICE_URL=http://ml-service:8000
+      - ML_SERVICE_URL=http://engine:8000
       - PORT=4000
     depends_on:
       - mongo
       - redis
-      - ml-service
     networks:
-      - scanner_net
+      - sentinel_net
+
+  worker:
+    build:
+      context: ./node-service
+    container_name: reposentinel_worker
+    restart: unless-stopped
+    command: node worker.js
+    volumes:
+      - scan_tmp:/tmp
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/reposentinel
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ML_SERVICE_URL=http://engine:8000
+    depends_on:
+      - mongo
+      - redis
+      - engine
+    networks:
+      - sentinel_net
 
   frontend:
     build:
       context: ./frontend
-    container_name: scanner_frontend
+    container_name: reposentinel_frontend
     restart: unless-stopped
     ports:
       - "5173:80"
     depends_on:
-      - node-service
+      - api
     networks:
-      - scanner_net
+      - sentinel_net
 
 networks:
-  scanner_net:
+  sentinel_net:
     driver: bridge
 
 volumes:
   mongo_data:
+  scan_tmp:
