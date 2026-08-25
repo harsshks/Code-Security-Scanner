@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const API = "/api";
+const API = import.meta.env.VITE_API_URL || "/api";
 const POLL_MS = 2500;
 const MAX_POLLS = 80; // ~3.3 min
 

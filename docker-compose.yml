@@ -41,24 +41,6 @@ services:
     command: node server.js
     ports:
       - "4000:4000"
-    environment:
-      - MONGO_URI=mongodb://mongo:27017/reposentinel
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - ML_SERVICE_URL=http://engine:8000
-      - PORT=4000
-    depends_on:
-      - mongo
-      - redis
-    networks:
-      - sentinel_net
-
-  worker:
-    build:
-      context: ./node-service
-    container_name: reposentinel_worker
-    restart: unless-stopped
-    command: node worker.js
     volumes:
       - scan_tmp:/tmp
     environment:
@@ -66,6 +48,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - ML_SERVICE_URL=http://engine:8000
+      - PORT=4000
     depends_on:
       - mongo
       - redis
