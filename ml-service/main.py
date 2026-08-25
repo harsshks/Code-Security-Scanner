@@ -94,12 +94,16 @@ RULES: list[dict] = [
         "recommendation": "Use parameterized queries or prepared statements. Never build SQL strings with string concatenation or f-strings.",
         "languages": None,
         "patterns": [
-            re.compile(r'(query|execute|exec)\s*\(\s*["\'].*?\+', re.I),
-            re.compile(r'(query|execute|exec)\s*\(\s*f["\']', re.I),
-            re.compile(r'SELECT\s.+FROM\s.+WHERE\s.+["\'\s]\s*\+', re.I),
-            re.compile(r'(cursor\.execute|db\.query|connection\.query)\s*\(.*?%\s*\(', re.I),
-            re.compile(r'(cursor\.execute|db\.query|\.query)\s*\(\s*["\'].*?\+\s*\w+', re.I),
-            re.compile(r'Statement\(\)\s*;\s*\w+\.execute\s*\(.*?\+', re.I),  # Java
+            # db.query("SELECT..." + variable)
+            re.compile(r'(\.query|\.execute)\s*\(\s*["\'](?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE)[^"\']*["\'\s]\s*\+', re.I),
+            # Python cursor.execute with f-string
+            re.compile(r'cursor\.execute\s*\(\s*f["\']', re.I),
+            # Python cursor.execute("..." + var)
+            re.compile(r'cursor\.execute\s*\(\s*["\'][^"\']*["\'\s]\s*\+', re.I),
+            # SELECT ... WHERE ... + var (multi-word SQL)
+            re.compile(r'["\']SELECT\s.{0,60}WHERE\s.{0,40}["\'\s]\s*\+\s*\w', re.I),
+            # Java Statement.executeQuery("..." + var)
+            re.compile(r'executeQuery\s*\(\s*["\'][^"\']*["\'\s]\s*\+', re.I),
         ],
     },
 
@@ -114,11 +118,16 @@ RULES: list[dict] = [
         "recommendation": "Use textContent instead of innerHTML. Sanitize output with DOMPurify before rendering user content. Avoid document.write().",
         "languages": {"JavaScript", "TypeScript"},
         "patterns": [
-            re.compile(r'innerHTML\s*=\s*(?!["\'\s]*<)', re.I),
-            re.compile(r'outerHTML\s*=\s*(?!["\'\s]*<)', re.I),
-            re.compile(r'document\.write\s*\(', re.I),
+            # element.innerHTML = variable (not a string literal)
+            re.compile(r'\.innerHTML\s*=\s*(?!["\'\s]*[<`])\s*\w', re.I),
+            # element.outerHTML = variable
+            re.compile(r'\.outerHTML\s*=\s*(?!["\'\s]*<)\s*\w', re.I),
+            # document.write(variable) — not write("")
+            re.compile(r'document\.write\s*\(\s*(?!["\'])\w', re.I),
+            # React dangerouslySetInnerHTML
             re.compile(r'dangerouslySetInnerHTML\s*=\s*\{', re.I),
-            re.compile(r'\.html\s*\(\s*(?!["\'])', re.I),
+            # jQuery $(el).html(variable) — not .html("literal")
+            re.compile(r'\$\([^)]+\)\.html\s*\(\s*(?!["\'])\w', re.I),
         ],
     },
 
@@ -129,18 +138,23 @@ RULES: list[dict] = [
         "cwe": "CWE-798",
         "confidence": 0.82,
         "description": "A secret key, password, or credential appears to be hardcoded in source code.",
-        "impact": "If code is pushed to a public repository or shared, credentials are permanently exposed and cannot be safely rotated without a code change.",
+        "impact": "If code is pushed to a public repository or shared, credentials are permanently exposed.",
         "recommendation": "Move secrets to environment variables or a secrets manager. Rotate any exposed credentials immediately.",
         "languages": None,
+        # Exclusion list — skip obvious placeholders
+        "exclude_pattern": re.compile(
+            r'(your[_\-]?|example|sample|test|dummy|fake|placeholder|changeme|<|>|\{|\}|xxx|todo|secret_here|password_here)',
+            re.I
+        ),
         "patterns": [
-            # password = "something" (not placeholders)
-            re.compile(r'(?i)\b(password|passwd|pwd)\s*=\s*["\'][^"\']{4,}["\'](?!.*(?:your|example|test|change|placeholder|<|>|\{|\}))', re.I),
-            # secret / api_key / token assignments
-            re.compile(r'(?i)\b(secret|api_key|apikey|auth_token|access_token|private_key)\s*=\s*["\'][^"\']{8,}["\']'),
-            # AWS-style keys
-            re.compile(r'(?i)(AKIA|ASIA)[A-Z0-9]{16}'),
-            # Generic high-entropy strings assigned to credential names
-            re.compile(r'(?i)\b(token|key|secret|credential)\s*[:=]\s*["\'][A-Za-z0-9/+_\-]{20,}["\']'),
+            # password = "realvalue" (min 6 chars, not a placeholder)
+            re.compile(r'\b(password|passwd|pwd)\s*=\s*["\'][^"\']{6,}["\']', re.I),
+            # api_key / secret / token = "value"
+            re.compile(r'\b(api_key|apikey|api_secret|auth_token|access_token|private_key|client_secret)\s*[:=]\s*["\'][^"\']{8,}["\']', re.I),
+            # AWS access key pattern
+            re.compile(r'\b(AKIA|ASIA|AROA)[A-Z0-9]{16}\b'),
+            # Generic bearer/secret token in strings (high entropy, 32+ chars)
+            re.compile(r'["\'][A-Za-z0-9+/]{32,}={0,2}["\']'),
         ],
     },
 
@@ -149,19 +163,23 @@ RULES: list[dict] = [
         "type": "Command Injection",
         "severity": "CRITICAL",
         "cwe": "CWE-78",
-        "confidence": 0.85,
+        "confidence": 0.87,
         "description": "Unsanitized user input is passed to a shell command execution function.",
-        "impact": "An attacker can execute arbitrary operating system commands with the privileges of the server process.",
-        "recommendation": "Avoid shell=True. Validate and whitelist all inputs. Use subprocess with argument lists, not strings. Use shlex.quote() if shell invocation is unavoidable.",
+        "impact": "An attacker can execute arbitrary OS commands with the privileges of the server process.",
+        "recommendation": "Avoid shell=True. Use subprocess with an argument list. Validate and whitelist inputs. Use shlex.quote() if shell is unavoidable.",
         "languages": None,
         "patterns": [
-            re.compile(r'os\.system\s*\(\s*[^"\'\)]*[\+\%]', re.I),
-            re.compile(r'os\.system\s*\(\s*f["\']', re.I),
-            re.compile(r'subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True', re.I),
-            re.compile(r'subprocess\.(call|run)\s*\(\s*[^"\'\[)]*[\+\%]', re.I),
-            re.compile(r'(shell_exec|passthru|system)\s*\(\s*\$', re.I),  # PHP
-            re.compile(r'Runtime\.getRuntime\(\)\.exec\s*\(.*?\+', re.I),  # Java
-            re.compile(r'exec\s*\(\s*[`\$]', re.I),  # JS template literals
+            # Python os.system with concatenation or f-string
+            re.compile(r'\bos\.system\s*\(\s*(f["\']|["\'][^"\']*["\'\s]*\+)', re.I),
+            # subprocess with shell=True and a variable
+            re.compile(r'subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True[^)]*\)', re.I),
+            # subprocess.call/run with string concat (not a list)
+            re.compile(r'subprocess\.(call|run)\s*\(\s*["\'][^"\']*["\'\s]*\+\s*\w', re.I),
+            # Java Runtime.exec with concatenation
+            re.compile(r'Runtime\.getRuntime\(\)\.exec\s*\([^)]*\+', re.I),
+            # JS child_process.exec/execSync with template literal or concat
+            re.compile(r'(child_process\.)?(exec|execSync)\s*\(\s*[`"\'][^`"\']*\$\{', re.I),
+            re.compile(r'(child_process\.)?(exec|execSync)\s*\(\s*["\'][^"\']*["\'\s]*\+\s*\w', re.I),
         ],
     },
 
@@ -170,16 +188,22 @@ RULES: list[dict] = [
         "type": "Path Traversal",
         "severity": "HIGH",
         "cwe": "CWE-22",
-        "confidence": 0.80,
-        "description": "A file system operation uses a path that may be influenced by user-controlled input.",
-        "impact": "An attacker could read arbitrary files on the server, including configuration files, private keys, or /etc/passwd.",
-        "recommendation": "Validate and canonicalize file paths. Use path.resolve() and verify the result is within the intended base directory. Never trust user-supplied paths directly.",
+        "confidence": 0.82,
+        "description": "A filesystem operation uses a path influenced by user-controlled input.",
+        "impact": "An attacker could read arbitrary server files including config files or private keys.",
+        "recommendation": "Validate and canonicalize file paths. Verify the resolved path stays within the intended directory.",
         "languages": None,
         "patterns": [
-            re.compile(r'(readFile|createReadStream|open|sendFile)\s*\(\s*(req\.|request\.|params\.|query\.|body\.)', re.I),
-            re.compile(r'path\.join\s*\([^)]*req\.', re.I),
-            re.compile(r'os\.path\.(join|open)\s*\([^)]*(?:request|input|user|param)', re.I),
-            re.compile(r'\.\./.*\.\./'),  # literal traversal sequences
+            # readFile(req.query.x) / readFile(req.params.x)
+            re.compile(r'\b(readFile|readFileSync|createReadStream|sendFile)\s*\(\s*(req\.|request\.)(query|params|body)\b', re.I),
+            # path.join(..., req.params.x)
+            re.compile(r'path\.join\s*\([^)]*\b(req|request)\.(query|params|body)\b', re.I),
+            # Python open(request.args / request.form)
+            re.compile(r'\bopen\s*\([^)]*\b(request\.(args|form|values|data)|input\(\))\b', re.I),
+            # os.path.join with user/input/param keyword (Python)
+            re.compile(r'os\.path\.join\s*\([^)]*\b(user_input|user_file|filename|filepath)\b', re.I),
+            # Java new File(request.getParameter)
+            re.compile(r'new\s+File\s*\([^)]*request\.getParameter', re.I),
         ],
     },
 
@@ -190,53 +214,58 @@ RULES: list[dict] = [
         "cwe": "CWE-502",
         "confidence": 0.92,
         "description": "A known insecure deserialization function is called.",
-        "impact": "Deserializing untrusted data can lead to remote code execution, denial of service, or privilege escalation.",
-        "recommendation": "Use yaml.safe_load() instead of yaml.load(). Avoid pickle for untrusted data. Prefer JSON. If using Java, avoid ObjectInputStream on untrusted streams.",
+        "impact": "Deserializing untrusted data can lead to remote code execution or privilege escalation.",
+        "recommendation": "Use yaml.safe_load(). Avoid pickle for untrusted data. Prefer JSON.",
         "languages": None,
         "patterns": [
             re.compile(r'\bpickle\.loads?\s*\(', re.I),
-            re.compile(r'\byaml\.load\s*\([^)]+\)(?!\s*#.*safe)', re.I),
-            re.compile(r'\bunserialize\s*\(\s*\$', re.I),  # PHP
-            re.compile(r'ObjectInputStream\s*\(', re.I),   # Java
-            re.compile(r'readObject\s*\(\s*\)', re.I),     # Java
+            # yaml.load without safe Loader argument
+            re.compile(r'\byaml\.load\s*\([^)]+\)(?!\s*#\s*safe)', re.I),
+            # PHP unserialize($var)
+            re.compile(r'\bunserialize\s*\(\s*\$\w+', re.I),
+            # Java ObjectInputStream
+            re.compile(r'\bnew\s+ObjectInputStream\s*\(', re.I),
+            re.compile(r'\.readObject\s*\(\s*\)', re.I),
         ],
     },
 
-    # ── Insecure Randomness (context-sensitive) ───────────────────────────────
+    # ── Insecure Randomness (context-sensitive only) ──────────────────────────
     {
         "type": "Insecure Randomness",
         "severity": "MEDIUM",
         "cwe": "CWE-338",
-        "confidence": 0.70,
-        "description": "A non-cryptographic PRNG is used in a context that appears security-sensitive (token, session, password, auth).",
-        "impact": "Predictable random values can allow attackers to guess session tokens, password reset links, or CSRF tokens.",
-        "recommendation": "Use crypto.randomBytes() or crypto.getRandomValues() in JS/TS. Use the secrets module in Python. Use SecureRandom in Java.",
+        "confidence": 0.72,
+        "description": "A weak PRNG is used in a security-sensitive context (token, session, password generation).",
+        "impact": "Predictable values allow attackers to guess session tokens or password reset links.",
+        "recommendation": "Use crypto.randomBytes() in Node.js, secrets module in Python, SecureRandom in Java.",
         "languages": None,
         "patterns": [
-            # Only flag Math.random when near security-sensitive keywords
-            re.compile(r'(token|session|password|secret|auth|csrf|nonce|key).*Math\.random\(\)', re.I),
-            re.compile(r'Math\.random\(\).*(token|session|password|secret|auth|csrf|nonce|key)', re.I),
-            re.compile(r'random\.random\(\).*(token|session|password|secret|auth)', re.I),
-            re.compile(r'(token|password|secret).*random\.random\(\)', re.I),
-            re.compile(r'\bnew Random\(\).*\.(next|generate)', re.I),
+            # Math.random() on same line as security-sensitive identifier
+            re.compile(r'(token|sessionId|csrf|nonce|salt|otp)[^;{]*Math\.random\(\)', re.I),
+            re.compile(r'Math\.random\(\)[^;{]*(token|sessionId|csrf|nonce|salt|otp)', re.I),
+            # Python random.random()/randint in security context
+            re.compile(r'(token|session|password|secret)\s*=.*\brandom\.(random|randint|choice)\(', re.I),
         ],
     },
 
-    # ── Eval / Code Injection ─────────────────────────────────────────────────
+    # ── eval() / Code Injection ───────────────────────────────────────────────
     {
         "type": "Code Injection via eval()",
         "severity": "CRITICAL",
         "cwe": "CWE-95",
         "confidence": 0.88,
         "description": "eval() or equivalent dynamic code execution is called with a non-literal argument.",
-        "impact": "An attacker who controls the input can execute arbitrary code in the application's context.",
-        "recommendation": "Eliminate eval() entirely. Use JSON.parse() for data, or structured configuration. If dynamic code is unavoidable, use a sandboxed runtime.",
+        "impact": "An attacker who controls the input can execute arbitrary code in the application context.",
+        "recommendation": "Eliminate eval(). Use JSON.parse() for data. If dynamic code is unavoidable, use a sandboxed runtime.",
         "languages": {"JavaScript", "TypeScript", "Python"},
         "patterns": [
-            re.compile(r'\beval\s*\(\s*(?!["\'])', re.I),
-            re.compile(r'\bexec\s*\(\s*(?!["\'])[^)]+\)', re.I),
-            re.compile(r'\bnew\s+Function\s*\(', re.I),  # JS
-            re.compile(r'compile\s*\(\s*(?!["\'])', re.I),  # Python
+            # JS/TS: eval(variable) — not eval("literal")
+            re.compile(r'\beval\s*\(\s*(?!["\'`])\w', re.I),
+            # JS: new Function(variable)  — e.g. new Function(userInput)
+            re.compile(r'\bnew\s+Function\s*\([^)]*\+', re.I),
+            re.compile(r'\bnew\s+Function\s*\(\s*\w+\s*\)', re.I),
+            # Python exec(variable) — not exec("literal")
+            re.compile(r'\bexec\s*\(\s*(?!["\'])[a-zA-Z_]\w*\s*\)', re.I),
         ],
     },
 
@@ -245,31 +274,35 @@ RULES: list[dict] = [
         "type": "Open Redirect",
         "severity": "MEDIUM",
         "cwe": "CWE-601",
-        "confidence": 0.72,
-        "description": "A redirect uses a URL derived from user-controlled input without validation.",
-        "impact": "Attackers can craft links that redirect users to malicious sites while appearing to originate from a trusted domain (phishing).",
-        "recommendation": "Validate redirect targets against a whitelist of allowed domains. Never redirect to user-supplied URLs directly.",
+        "confidence": 0.75,
+        "description": "A redirect uses a URL from user-controlled input without validation.",
+        "impact": "Attackers can craft phishing links that appear to come from a trusted domain.",
+        "recommendation": "Validate redirect targets against a whitelist. Never redirect to user-supplied URLs directly.",
         "languages": {"JavaScript", "TypeScript", "Python"},
         "patterns": [
-            re.compile(r'res\.redirect\s*\(\s*(req\.|request\.)', re.I),
-            re.compile(r'redirect\s*\(\s*(request\.|req\.)', re.I),
-            re.compile(r'window\.location\s*=\s*(?!["\'])', re.I),
-            re.compile(r'location\.href\s*=\s*(req\.|request\.|params\.|query\.)', re.I),
+            # Express res.redirect(req.query.x)
+            re.compile(r'\bres\.redirect\s*\(\s*(req\.|request\.)(query|params|body)\b', re.I),
+            # Flask redirect(request.args.get(...))
+            re.compile(r'\bredirect\s*\(\s*request\.(args|form|values)\.get\b', re.I),
+            # window.location = req param
+            re.compile(r'window\.location\s*(?:\.href)?\s*=\s*(req\.|request\.)(query|params)', re.I),
         ],
     },
 
-    # ── Sensitive Data Logging ────────────────────────────────────────────────
+    # ── Sensitive Data in Logs ────────────────────────────────────────────────
     {
         "type": "Sensitive Data in Logs",
         "severity": "LOW",
         "cwe": "CWE-532",
         "confidence": 0.65,
-        "description": "Password, token, or secret appears to be logged.",
-        "impact": "Log files may be stored insecurely or transmitted to logging services, exposing sensitive data.",
-        "recommendation": "Never log passwords, tokens, or credentials. Mask or omit sensitive fields before logging.",
+        "description": "A password, token, or secret appears to be passed to a logging function.",
+        "impact": "Log files may be stored insecurely, exposing credentials to anyone with log access.",
+        "recommendation": "Never log passwords, tokens, or credentials. Mask or omit sensitive fields.",
         "languages": None,
         "patterns": [
-            re.compile(r'(console\.(log|info|debug|error)|logger\.(info|debug|warn|error)|print)\s*\([^)]*(?:password|passwd|token|secret|api_key)', re.I),
+            # console.log / logger.info / print with password/token/secret variable nearby
+            re.compile(r'(console\.(log|info|debug|error|warn)|logger\.(info|debug|warn|error))\s*\([^)]{0,80}(password|passwd|token|secret|api_key|apikey)\b', re.I),
+            re.compile(r'\bprint\s*\([^)]{0,80}(password|passwd|token|secret)\b', re.I),
         ],
     },
 ]
@@ -297,12 +330,23 @@ def scan_lines(
         if rule["languages"] and language not in rule["languages"]:
             continue
 
+        exclude = rule.get("exclude_pattern")
+
         for line_no, line_text in enumerate(lines, start=1):
+            # Skip blank lines and pure comments early
+            stripped = line_text.strip()
+            if not stripped or stripped.startswith(("//", "#", "*", "/*")):
+                continue
+
             for pattern in rule["patterns"]:
                 if pattern.search(line_text):
+                    # Apply exclusion filter (e.g. placeholder secrets)
+                    if exclude and exclude.search(line_text):
+                        break
+
                     fp = fingerprint(rule["type"], file_path, line_no)
                     if fp in seen_fingerprints:
-                        break  # deduplicate same rule+file+line
+                        break
                     seen_fingerprints.add(fp)
 
                     results.append({
@@ -320,7 +364,6 @@ def scan_lines(
                         "language": language,
                     })
                     break  # one match per rule per line
-
 
     return results
 
