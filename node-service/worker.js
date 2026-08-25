@@ -110,7 +110,7 @@ async function processJob(job) {
       { timeout: 120_000 }
     );
 
-    const { findings, filesScanned, totalFiles, languageSummary } = response.data;
+    const { findings, filesScanned, totalFiles, languageSummary, repoInsights } = response.data;
 
     const securityScore = calculateSecurityScore(findings);
     const summary = buildSummary(findings);
@@ -128,6 +128,7 @@ async function processJob(job) {
         filesScanned: filesScanned || 0,
         totalFiles: totalFiles || 0,
         languageSummary: languageSummary || {},
+        ...(repoInsights && { repoInsights }),
         error: null,
       }
     );

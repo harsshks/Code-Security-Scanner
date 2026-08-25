@@ -73,6 +73,7 @@ class AnalyzeResponse(BaseModel):
     filesScanned: int
     totalFiles: int
     languageSummary: dict[str, int]
+    repoInsights: Optional[dict] = None
 
 
 # ── Rule definitions ──────────────────────────────────────────────────────────
@@ -459,6 +460,322 @@ def scan_snippet(code: str) -> list[dict]:
     return results
 
 
+# ── Repo Insights Extraction ──────────────────────────────────────────────────
+
+import json
+
+# ── 1. Dependency Audit ───────────────────────────────────────────────────────
+
+def _parse_package_json(path: str) -> list[dict]:
+    """Parse npm dependencies from package.json."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+        deps = []
+        for section in ("dependencies", "devDependencies", "peerDependencies"):
+            for name, version in (data.get(section) or {}).items():
+                deps.append({
+                    "name": name,
+                    "version": version,
+                    "section": section,
+                    "unpinned": version.startswith(("^", "~", ">", "*", "latest")),
+                })
+        return deps
+    except Exception:
+        return []
+
+
+def _parse_requirements_txt(path: str) -> list[dict]:
+    """Parse Python dependencies from requirements.txt."""
+    deps = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith(("#", "-")):
+                    continue
+                # e.g. requests==2.28.0 or requests>=2.0
+                match = re.match(r'^([A-Za-z0-9_.\-]+)\s*([=<>!~].+)?$', line)
+                if match:
+                    name = match.group(1)
+                    version = (match.group(2) or "").strip() or "unspecified"
+                    deps.append({
+                        "name": name,
+                        "version": version,
+                        "section": "dependencies",
+                        "unpinned": not version.startswith("=="),
+                    })
+    except Exception:
+        pass
+    return deps
+
+
+def _parse_pom_xml(path: str) -> list[dict]:
+    """Parse Java dependencies from pom.xml (basic regex, no XML parser needed)."""
+    deps = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        # Extract <dependency> blocks
+        blocks = re.findall(r'<dependency>(.*?)</dependency>', content, re.DOTALL)
+        for block in blocks:
+            group = re.search(r'<groupId>(.*?)</groupId>', block)
+            artifact = re.search(r'<artifactId>(.*?)</artifactId>', block)
+            version = re.search(r'<version>(.*?)</version>', block)
+            if group and artifact:
+                ver = version.group(1).strip() if version else "unspecified"
+                deps.append({
+                    "name": f"{group.group(1).strip()}:{artifact.group(1).strip()}",
+                    "version": ver,
+                    "section": "dependencies",
+                    "unpinned": "${" in ver or not ver or ver == "unspecified",
+                })
+    except Exception:
+        pass
+    return deps
+
+
+def extract_dependencies(repo_path: str) -> dict:
+    """Find and parse dependency files in the repo root and one level deep."""
+    dep_files_found = []
+    all_deps = []
+
+    # Files to look for and their parsers
+    PARSERS = {
+        "package.json":    _parse_package_json,
+        "requirements.txt": _parse_requirements_txt,
+        "pom.xml":         _parse_pom_xml,
+    }
+
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+        depth = root.replace(repo_path, "").count(os.sep)
+        if depth > 1:
+            continue  # only look in root and one level deep
+
+        for fname, parser in PARSERS.items():
+            if fname in files:
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, repo_path)
+                parsed = parser(fpath)
+                dep_files_found.append(rel)
+                all_deps.extend(parsed)
+
+    unpinned = [d for d in all_deps if d["unpinned"]]
+    return {
+        "depFiles": dep_files_found,
+        "totalDependencies": len(all_deps),
+        "unpinnedCount": len(unpinned),
+        "unpinnedDeps": [d["name"] for d in unpinned[:20]],  # cap list
+        "dependencies": all_deps[:100],  # cap for storage
+    }
+
+
+# ── 2. Repo Health Checklist ──────────────────────────────────────────────────
+
+HEALTH_CHECKS = [
+    # (id, label, description, files_or_dirs_that_pass)
+    ("readme",       "README present",         "Project has a README file",                    ["README.md", "README.rst", "README.txt", "README"]),
+    ("license",      "LICENSE present",         "Project has an open source license",           ["LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"]),
+    ("contributing", "CONTRIBUTING guide",      "Project has contribution guidelines",          ["CONTRIBUTING.md", "CONTRIBUTING.rst", "CONTRIBUTING"]),
+    ("security",     "SECURITY policy",         "Project has a responsible disclosure policy",  ["SECURITY.md", "SECURITY.txt", ".github/SECURITY.md"]),
+    ("ci",           "CI/CD configured",        "Continuous integration is set up",             [".github/workflows", ".travis.yml", "Jenkinsfile", ".circleci", ".gitlab-ci.yml", "azure-pipelines.yml"]),
+    ("lockfile",     "Dependency lock file",    "Exact dependency versions are locked",         ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock"]),
+    ("tests",        "Test files present",      "Project has at least one test file",           ["test", "tests", "__tests__", "spec", "src/test"]),
+    ("changelog",    "CHANGELOG present",       "Project maintains a changelog",                ["CHANGELOG.md", "CHANGELOG.rst", "CHANGELOG", "CHANGES.md"]),
+    ("dockerfile",   "Docker support",          "Project includes Docker configuration",        ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"]),
+    ("env_example",  ".env.example present",    "Environment variable template is documented",  [".env.example", ".env.sample", ".env.template"]),
+]
+
+def check_repo_health(repo_path: str) -> dict:
+    """Check repo root for health indicator files/dirs."""
+    all_entries = set()
+    # Collect top-level entries
+    try:
+        for entry in os.listdir(repo_path):
+            all_entries.add(entry)
+            all_entries.add(entry.lower())
+        # Also collect .github/ contents
+        gh_path = os.path.join(repo_path, ".github")
+        if os.path.isdir(gh_path):
+            for entry in os.listdir(gh_path):
+                all_entries.add(f".github/{entry}")
+                all_entries.add(f".github/{entry.lower()}")
+            wf_path = os.path.join(gh_path, "workflows")
+            if os.path.isdir(wf_path):
+                all_entries.add(".github/workflows")
+    except Exception:
+        pass
+
+    checks = []
+    passed = 0
+    for check_id, label, description, indicators in HEALTH_CHECKS:
+        hit = any(ind in all_entries or ind.lower() in all_entries for ind in indicators)
+        checks.append({
+            "id": check_id,
+            "label": label,
+            "description": description,
+            "passed": hit,
+        })
+        if hit:
+            passed += 1
+
+    health_score = round((passed / len(HEALTH_CHECKS)) * 100)
+    return {
+        "score": health_score,
+        "passed": passed,
+        "total": len(HEALTH_CHECKS),
+        "checks": checks,
+    }
+
+
+# ── 3. Accidental Sensitive File Detection ────────────────────────────────────
+
+SENSITIVE_FILE_PATTERNS = [
+    # .env files (actual, not examples)
+    (re.compile(r'^\.env$', re.I),                  "Environment file (.env)",          "CRITICAL"),
+    (re.compile(r'^\.env\.(local|prod|production|staging|live)$', re.I), "Production .env file", "CRITICAL"),
+    # Private keys / certificates
+    (re.compile(r'.*\.(pem|key|p12|pfx|jks|keystore)$', re.I), "Private key or certificate", "CRITICAL"),
+    (re.compile(r'^id_rsa$|^id_dsa$|^id_ecdsa$|^id_ed25519$', re.I), "SSH private key", "CRITICAL"),
+    # Credential files
+    (re.compile(r'^credentials(\.json|\.yml|\.yaml|\.xml)?$', re.I), "Credentials file", "HIGH"),
+    (re.compile(r'^(secrets|secret)(\.json|\.yml|\.yaml)?$', re.I),  "Secrets file",     "HIGH"),
+    (re.compile(r'^auth(\.json|\.yml|\.yaml)?$', re.I),               "Auth config file", "HIGH"),
+    # Cloud / service credentials
+    (re.compile(r'^(service.?account|gcp.?key|aws.?credentials)(\.json)?$', re.I), "Cloud credential file", "CRITICAL"),
+    (re.compile(r'^\.aws$', re.I),                  "AWS credentials directory",        "CRITICAL"),
+    # Database dumps
+    (re.compile(r'.*\.(sql|dump|bak|backup)$', re.I), "Database dump or backup file",  "HIGH"),
+    # Password files
+    (re.compile(r'^(passwords?|passwd)(\.txt|\.csv|\.json)?$', re.I), "Password file",  "CRITICAL"),
+]
+
+def detect_sensitive_files(repo_path: str) -> dict:
+    """Walk repo tree looking for sensitive file names."""
+    flagged = []
+    seen_paths = set()
+
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in {".git"}]
+
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            rel_path = os.path.relpath(fpath, repo_path)
+
+            if rel_path in seen_paths:
+                continue
+
+            for pattern, label, severity in SENSITIVE_FILE_PATTERNS:
+                if pattern.match(fname):
+                    seen_paths.add(rel_path)
+                    flagged.append({
+                        "file": rel_path,
+                        "label": label,
+                        "severity": severity,
+                    })
+                    break
+
+    return {
+        "flaggedFiles": flagged,
+        "count": len(flagged),
+        "hasCritical": any(f["severity"] == "CRITICAL" for f in flagged),
+    }
+
+
+# ── 4. Tech Stack Fingerprint ─────────────────────────────────────────────────
+
+TECH_INDICATORS = {
+    # Runtime / Language
+    "Node.js":      [("file", "package.json")],
+    "Python":       [("file", "requirements.txt"), ("file", "setup.py"), ("file", "pyproject.toml")],
+    "Java":         [("file", "pom.xml"), ("file", "build.gradle")],
+    "Go":           [("file", "go.mod")],
+    "Ruby":         [("file", "Gemfile")],
+    "PHP":          [("file", "composer.json")],
+    "Rust":         [("file", "Cargo.toml")],
+    # Frameworks (detected from package.json deps)
+    "React":        [("dep", "react")],
+    "Vue":          [("dep", "vue")],
+    "Angular":      [("dep", "@angular/core")],
+    "Next.js":      [("dep", "next")],
+    "Express":      [("dep", "express")],
+    "Fastify":      [("dep", "fastify")],
+    "NestJS":       [("dep", "@nestjs/core")],
+    "Django":       [("dep_txt", "Django"), ("dep_txt", "django")],
+    "FastAPI":      [("dep_txt", "fastapi")],
+    "Flask":        [("dep_txt", "Flask"), ("dep_txt", "flask")],
+    "Spring":       [("dep_pom", "org.springframework")],
+    # Databases
+    "MongoDB":      [("dep", "mongoose"), ("dep", "mongodb")],
+    "PostgreSQL":   [("dep", "pg"), ("dep", "postgres"), ("dep_txt", "psycopg2")],
+    "MySQL":        [("dep", "mysql"), ("dep", "mysql2")],
+    "Redis":        [("dep", "ioredis"), ("dep", "redis")],
+    "SQLite":       [("dep", "better-sqlite3"), ("dep_txt", "sqlite3")],
+    # Infra / tooling
+    "Docker":       [("file", "Dockerfile"), ("file", "docker-compose.yml")],
+    "Kubernetes":   [("file", "k8s"), ("ext_dir", "k8s")],
+    "Webpack":      [("dep_dev", "webpack")],
+    "Vite":         [("dep_dev", "vite")],
+    "TypeScript":   [("dep_dev", "typescript"), ("file", "tsconfig.json")],
+    "Jest":         [("dep_dev", "jest")],
+    "ESLint":       [("dep_dev", "eslint")],
+}
+
+def detect_tech_stack(repo_path: str, dep_audit: dict) -> list[str]:
+    """Detect technologies from file presence and dependency names."""
+    detected = []
+
+    # Collect top-level files/dirs
+    try:
+        top_entries = set(os.listdir(repo_path))
+    except Exception:
+        top_entries = set()
+
+    # Collect dep names from audit
+    all_dep_names = {d["name"].lower() for d in dep_audit.get("dependencies", [])}
+    dev_dep_names = {
+        d["name"].lower() for d in dep_audit.get("dependencies", [])
+        if d.get("section") == "devDependencies"
+    }
+
+    for tech, indicators in TECH_INDICATORS.items():
+        for kind, value in indicators:
+            hit = False
+            if kind == "file":
+                hit = value in top_entries
+            elif kind == "ext_dir":
+                hit = any(e.lower() == value for e in top_entries)
+            elif kind == "dep":
+                hit = value.lower() in all_dep_names
+            elif kind == "dep_dev":
+                hit = value.lower() in dev_dep_names
+            elif kind in ("dep_txt", "dep_pom"):
+                hit = value.lower() in all_dep_names
+            if hit:
+                detected.append(tech)
+                break
+
+    return detected
+
+
+# ── Master insights extractor ─────────────────────────────────────────────────
+
+def extract_repo_insights(repo_path: str) -> dict:
+    """Run all three insight extractors and return combined result."""
+    dep_audit   = extract_dependencies(repo_path)
+    health      = check_repo_health(repo_path)
+    sensitive   = detect_sensitive_files(repo_path)
+    tech_stack  = detect_tech_stack(repo_path, dep_audit)
+
+    return {
+        "dependencyAudit": dep_audit,
+        "repoHealth":      health,
+        "sensitiveFiles":  sensitive,
+        "techStack":       tech_stack,
+    }
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -490,6 +807,7 @@ def analyze(req: AnalyzeRequest):
 
         logger.info(f"Scanning repository: {req.repositoryPath}")
         findings, files_scanned, total_files, lang_summary = scan_repository(req.repositoryPath)
+        insights = extract_repo_insights(req.repositoryPath)
 
     else:  # snippet
         if not req.code or not req.code.strip():
@@ -502,6 +820,7 @@ def analyze(req: AnalyzeRequest):
         files_scanned = 1
         total_files = 1
         lang_summary = {}
+        insights = None
 
     logger.info(
         f"Analysis complete — {len(findings)} findings across {files_scanned} files"
@@ -512,4 +831,5 @@ def analyze(req: AnalyzeRequest):
         filesScanned=files_scanned,
         totalFiles=total_files,
         languageSummary=lang_summary,
+        repoInsights=insights,
     )

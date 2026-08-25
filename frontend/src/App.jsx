@@ -203,6 +203,198 @@ function TrendChart({ scans }) {
   );
 }
 
+// ── Repo Insights components ──────────────────────────────────────────────────
+
+function HealthCheck({ check }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className={`mt-0.5 text-base flex-shrink-0 ${check.passed ? "text-green-400" : "text-gray-600"}`}>
+        {check.passed ? "✓" : "✗"}
+      </span>
+      <div>
+        <p className={`text-sm font-medium ${check.passed ? "text-gray-200" : "text-gray-500"}`}>
+          {check.label}
+        </p>
+        <p className="text-xs text-gray-600">{check.description}</p>
+      </div>
+    </div>
+  );
+}
+
+function RepoHealthPanel({ health }) {
+  if (!health) return null;
+  const color = health.score >= 80 ? "#34d399" : health.score >= 50 ? "#facc15" : "#f97316";
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-5 flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-gray-200">Repo Health</p>
+          <p className="text-xs text-gray-500 mt-0.5">{health.passed}/{health.total} checks passed</p>
+        </div>
+        <div className="text-right">
+          <span className="text-2xl font-bold" style={{ color }}>{health.score}</span>
+          <span className="text-xs text-gray-500">/100</span>
+        </div>
+      </div>
+      {/* Progress bar */}
+      <div className="h-1.5 rounded-full bg-gray-800">
+        <div className="h-1.5 rounded-full transition-all duration-700"
+          style={{ width: `${health.score}%`, backgroundColor: color }} />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {(health.checks || []).map(c => <HealthCheck key={c.id} check={c} />)}
+      </div>
+    </div>
+  );
+}
+
+function DependencyAuditPanel({ audit }) {
+  if (!audit) return null;
+  const [showAll, setShowAll] = useState(false);
+  const deps = audit.dependencies || [];
+  const displayed = showAll ? deps : deps.slice(0, 15);
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-5 flex flex-col gap-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-semibold text-gray-200">Dependency Audit</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {audit.depFiles?.join(", ") || "No manifest found"}
+          </p>
+        </div>
+        <div className="flex gap-3 flex-shrink-0 text-right">
+          <div>
+            <p className="text-lg font-bold text-gray-100">{audit.totalDependencies}</p>
+            <p className="text-xs text-gray-500">total</p>
+          </div>
+          <div>
+            <p className={`text-lg font-bold ${audit.unpinnedCount > 0 ? "text-yellow-400" : "text-green-400"}`}>
+              {audit.unpinnedCount}
+            </p>
+            <p className="text-xs text-gray-500">unpinned</p>
+          </div>
+        </div>
+      </div>
+
+      {audit.unpinnedCount > 0 && (
+        <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3">
+          <p className="text-xs text-yellow-400 font-semibold mb-1">
+            ⚠ {audit.unpinnedCount} unpinned dependencies
+          </p>
+          <p className="text-xs text-gray-500">
+            Using ^ or ~ version ranges means updates can break builds silently.
+            Consider pinning to exact versions.
+          </p>
+          <p className="text-xs text-yellow-400/70 mt-1">{audit.unpinnedDeps?.slice(0, 8).join(", ")}{audit.unpinnedDeps?.length > 8 ? "…" : ""}</p>
+        </div>
+      )}
+
+      {deps.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">All Dependencies</p>
+          <div className="max-h-56 overflow-y-auto flex flex-col gap-1 pr-1">
+            {displayed.map((d, i) => (
+              <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-gray-800/60">
+                <span className={`font-mono ${d.unpinned ? "text-yellow-400" : "text-gray-300"}`}>
+                  {d.name}
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500 font-mono">{d.version}</span>
+                  {d.section === "devDependencies" && (
+                    <span className="text-gray-600 text-xs">dev</span>
+                  )}
+                  {d.unpinned && <span className="text-yellow-500 text-xs">unpinned</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {deps.length > 15 && (
+            <button onClick={() => setShowAll(p => !p)}
+              className="text-xs text-indigo-400 hover:text-indigo-300 mt-1 self-start">
+              {showAll ? "Show less" : `Show all ${deps.length} dependencies`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SensitiveFilesPanel({ sensitive }) {
+  if (!sensitive) return null;
+  const files = sensitive.flaggedFiles || [];
+
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 p-5 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-gray-200">Sensitive File Detection</p>
+        {files.length === 0
+          ? <span className="text-xs text-green-400 font-semibold">✓ Clean</span>
+          : <span className={`text-xs font-bold ${sensitive.hasCritical ? "text-purple-400" : "text-yellow-400"}`}>
+              {files.length} file{files.length > 1 ? "s" : ""} flagged
+            </span>
+        }
+      </div>
+
+      {files.length === 0 ? (
+        <p className="text-xs text-gray-500">
+          No .env files, private keys, credential files, or database dumps detected in the repository tree.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-gray-500">
+            These files may contain secrets and should not be committed to version control.
+          </p>
+          {files.map((f, i) => (
+            <div key={i} className={`flex items-start gap-3 rounded-lg border p-3 ${
+              f.severity === "CRITICAL"
+                ? "border-purple-500/30 bg-purple-500/10"
+                : "border-yellow-500/30 bg-yellow-500/10"
+            }`}>
+              <span className={`text-xs font-bold mt-0.5 flex-shrink-0 ${
+                f.severity === "CRITICAL" ? "text-purple-400" : "text-yellow-400"
+              }`}>{f.severity}</span>
+              <div>
+                <p className="text-xs font-mono text-gray-200">{f.file}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{f.label}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InsightsPanel({ insights }) {
+  if (!insights) return (
+    <div className="text-sm text-gray-600 text-center py-12">
+      Insights are only available for repository scans.
+    </div>
+  );
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Tech stack badges */}
+      {insights.techStack?.length > 0 && (
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Detected Tech Stack</p>
+          <div className="flex flex-wrap gap-2">
+            {insights.techStack.map(t => (
+              <span key={t} className="text-xs font-medium px-2.5 py-1 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <RepoHealthPanel health={insights.repoHealth} />
+      <DependencyAuditPanel audit={insights.dependencyAudit} />
+      <SensitiveFilesPanel sensitive={insights.sensitiveFiles} />
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   // Tab: "scan" | "history"
@@ -222,6 +414,9 @@ export default function App() {
   const [filterSev,  setFilterSev]  = useState("ALL");
   const [filterType, setFilterType] = useState("");
   const [filterLang, setFilterLang] = useState("ALL");
+
+  // Result sub-tab
+  const [resultTab, setResultTab] = useState("findings"); // "findings" | "insights"
 
   // History
   const [history, setHistory]   = useState([]);
@@ -280,7 +475,7 @@ export default function App() {
   // ── Submit ──────────────────────────────────────────────────────────────────
   const handleScan = useCallback(async () => {
     stopPolling();
-    setScanState("scanning"); setResult(null); setErrorMsg("");
+    setScanState("scanning"); setResult(null); setErrorMsg(""); setResultTab("findings");
 
     const body = snippetMode ? { code } : { repositoryUrl: repoUrl.trim() };
 
@@ -473,7 +668,6 @@ export default function App() {
                         {result.duration && <span>{(result.duration / 1000).toFixed(1)}s</span>}
                       </div>
                       <SummaryBar summary={result.summary} />
-                      {/* Language summary */}
                       {result.languageSummary && Object.keys(result.languageSummary).length > 0 && (
                         <div className="flex gap-3 flex-wrap">
                           {Object.entries(result.languageSummary).map(([lang, count]) => (
@@ -487,50 +681,72 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Filters */}
-                {findings.length > 0 && (
-                  <div className="flex gap-3 flex-wrap">
-                    <select value={filterSev} onChange={e => setFilterSev(e.target.value)}
-                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none">
-                      <option value="ALL">Severity: All</option>
-                      {["CRITICAL","HIGH","MEDIUM","LOW","INFO"].map(s => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                    <select value={filterType} onChange={e => setFilterType(e.target.value)}
-                      className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none">
-                      <option value="">Type: All</option>
-                      {allTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                    {allLanguages.length > 1 && (
-                      <select value={filterLang} onChange={e => setFilterLang(e.target.value)}
-                        className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none">
-                        <option value="ALL">Language: All</option>
-                        {allLanguages.map(l => <option key={l} value={l}>{l}</option>)}
-                      </select>
+                {/* Sub-tabs: Findings | Insights */}
+                <div className="flex rounded-lg overflow-hidden border border-gray-800 text-xs font-medium w-fit">
+                  <button onClick={() => setResultTab("findings")}
+                    className={`px-4 py-2 transition-colors ${resultTab === "findings" ? "bg-indigo-600 text-white" : "text-gray-400 hover:bg-gray-800"}`}>
+                    Findings {findings.length > 0 && `(${findings.length})`}
+                  </button>
+                  {result.repoInsights && (
+                    <button onClick={() => setResultTab("insights")}
+                      className={`px-4 py-2 transition-colors ${resultTab === "insights" ? "bg-indigo-600 text-white" : "text-gray-400 hover:bg-gray-800"}`}>
+                      Insights
+                    </button>
+                  )}
+                </div>
+
+                {/* ── Findings tab ── */}
+                {resultTab === "findings" && (
+                  <>
+                    {findings.length > 0 && (
+                      <div className="flex gap-3 flex-wrap">
+                        <select value={filterSev} onChange={e => setFilterSev(e.target.value)}
+                          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none">
+                          <option value="ALL">Severity: All</option>
+                          {["CRITICAL","HIGH","MEDIUM","LOW","INFO"].map(s => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                        <select value={filterType} onChange={e => setFilterType(e.target.value)}
+                          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none">
+                          <option value="">Type: All</option>
+                          {allTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                        {allLanguages.length > 1 && (
+                          <select value={filterLang} onChange={e => setFilterLang(e.target.value)}
+                            className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none">
+                            <option value="ALL">Language: All</option>
+                            {allLanguages.map(l => <option key={l} value={l}>{l}</option>)}
+                          </select>
+                        )}
+                        <span className="text-xs text-gray-500 self-center ml-auto">
+                          {filtered.length} of {findings.length} findings
+                        </span>
+                      </div>
                     )}
-                    <span className="text-xs text-gray-500 self-center ml-auto">
-                      {filtered.length} of {findings.length} findings
-                    </span>
-                  </div>
+
+                    {findings.length === 0 ? (
+                      <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-6 text-center">
+                        <div className="text-3xl mb-2">✅</div>
+                        <p className="text-green-400 font-semibold">No vulnerabilities detected.</p>
+                        <p className="text-xs text-green-400/60 mt-1">
+                          Static analysis is limited — combine with manual code review and dynamic testing.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {filtered.map(f => <FindingCard key={f.id} f={f} />)}
+                        {filtered.length === 0 && (
+                          <p className="text-sm text-gray-500 text-center py-6">No findings match current filters.</p>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
 
-                {/* Findings list */}
-                {findings.length === 0 ? (
-                  <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-6 text-center">
-                    <div className="text-3xl mb-2">✅</div>
-                    <p className="text-green-400 font-semibold">No vulnerabilities detected.</p>
-                    <p className="text-xs text-green-400/60 mt-1">
-                      Static analysis is limited — combine with manual code review and dynamic testing.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {filtered.map(f => <FindingCard key={f.id} f={f} />)}
-                    {filtered.length === 0 && (
-                      <p className="text-sm text-gray-500 text-center py-6">No findings match current filters.</p>
-                    )}
-                  </div>
+                {/* ── Insights tab ── */}
+                {resultTab === "insights" && (
+                  <InsightsPanel insights={result.repoInsights} />
                 )}
               </div>
             )}

@@ -56,6 +56,28 @@ const ScanSchema = new mongoose.Schema(
     totalFiles: { type: Number, default: 0 },
     languageSummary: { type: Map, of: Number, default: {} },
     error: { type: String, default: null },
+    // Tier 1 insights — only populated for repo scans
+    repoInsights: {
+      dependencyAudit: {
+        depFiles:          { type: [String], default: [] },
+        totalDependencies: { type: Number, default: 0 },
+        unpinnedCount:     { type: Number, default: 0 },
+        unpinnedDeps:      { type: [String], default: [] },
+        dependencies:      { type: mongoose.Schema.Types.Mixed, default: [] },
+      },
+      repoHealth: {
+        score:   { type: Number, default: null },
+        passed:  { type: Number, default: 0 },
+        total:   { type: Number, default: 0 },
+        checks:  { type: mongoose.Schema.Types.Mixed, default: [] },
+      },
+      sensitiveFiles: {
+        flaggedFiles: { type: mongoose.Schema.Types.Mixed, default: [] },
+        count:        { type: Number, default: 0 },
+        hasCritical:  { type: Boolean, default: false },
+      },
+      techStack: { type: [String], default: [] },
+    },
   },
   { timestamps: true }
 );
