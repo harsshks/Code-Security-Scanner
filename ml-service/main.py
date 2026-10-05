@@ -49,6 +49,7 @@ LANGUAGE_EXTENSIONS: dict[str, str] = {
 
 class AnalyzeRequest(BaseModel):
     repositoryPath: Optional[str] = None
+    repositoryUrl: Optional[str] = None
     code: Optional[str] = None
     inputType: str = "repo"           # "repo" | "snippet"
 
@@ -800,14 +801,36 @@ def health():
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
     if req.inputType == "repo":
-        if not req.repositoryPath:
-            raise HTTPException(400, "'repositoryPath' required for repo scan.")
-        if not os.path.isdir(req.repositoryPath):
-            raise HTTPException(400, f"Path does not exist: {req.repositoryPath}")
+        temp_dir = None
+        try:
+            if req.repositoryUrl:
+                # Clone the repo here on the engine
+                import subprocess, tempfile, uuid
+                temp_dir = os.path.join(tempfile.gettempdir(), f"reposentinel-{uuid.uuid4().hex}")
+                os.makedirs(temp_dir, exist_ok=True)
+                logger.info(f"Cloning {req.repositoryUrl}")
+                result = subprocess.run(
+                    ["git", "clone", "--depth", "1", "--single-branch", req.repositoryUrl, temp_dir],
+                    capture_output=True, text=True, timeout=90
+                )
+                if result.returncode != 0:
+                    raise HTTPException(400, f"Clone failed: {result.stderr[:200]}")
+                repo_path = temp_dir
+            elif req.repositoryPath:
+                if not os.path.isdir(req.repositoryPath):
+                    raise HTTPException(400, f"Path does not exist: {req.repositoryPath}")
+                repo_path = req.repositoryPath
+            else:
+                raise HTTPException(400, "'repositoryUrl' or 'repositoryPath' required for repo scan.")
 
-        logger.info(f"Scanning repository: {req.repositoryPath}")
-        findings, files_scanned, total_files, lang_summary = scan_repository(req.repositoryPath)
-        insights = extract_repo_insights(req.repositoryPath)
+            logger.info(f"Scanning repository: {repo_path}")
+            findings, files_scanned, total_files, lang_summary = scan_repository(repo_path)
+            insights = extract_repo_insights(repo_path)
+        finally:
+            if temp_dir and os.path.isdir(temp_dir):
+                import shutil
+                try: shutil.rmtree(temp_dir)
+                except: pass
 
     else:  # snippet
         if not req.code or not req.code.strip():

@@ -104,11 +104,8 @@ async function processJob(job) {
       if (!repositoryUrl || !repositoryUrl.startsWith("https://github.com/")) {
         throw new Error("Invalid repository URL.");
       }
-      tempDir = makeTempDir(scanId);
-      console.log(`[${scanId}] Cloning ${repositoryUrl}`);
-      await cloneRepo(repositoryUrl, tempDir);
-      console.log(`[${scanId}] Clone complete`);
-      payload = { repositoryPath: tempDir, inputType: "repo" };
+      console.log(`[${scanId}] Sending repo URL to engine`);
+      payload = { repositoryUrl, inputType: "repo" };
     } else {
       payload = { code, inputType: "snippet" };
     }
