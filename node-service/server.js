@@ -22,6 +22,7 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
 
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json({ limit: "512kb" }));
 
