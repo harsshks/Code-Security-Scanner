@@ -31,6 +31,7 @@ const scanLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: "Too many scan requests. Please wait a minute." },
 });
 
